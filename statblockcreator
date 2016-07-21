@@ -1,0 +1,377 @@
+#!/usr/bin/env python
+
+import argparse
+from bs4 import BeautifulSoup
+import os.path
+import re
+
+# read template html as soup
+# read monster file
+# change attributes based on data from monster text file
+# create a new html file
+
+# create a class that holds all monster data
+
+class Creature():
+    def __init__(self,data):
+        # parse creature data here
+        self.data = self.loadData(data)
+
+        self.creature_heading = self.getCreatureHeading()
+        self.topstats, self.abilitiesblock = self.getTopStats_abilitiesBlock()
+        self.traits = self.getTraits()
+        self.actions = self.getActions()
+        self.legendary_actions = self.getLegendaryActions()
+        self.reactions = self.getReactions()
+
+
+    def loadData(self, data):
+        f = open(data, 'r')
+        lines = f.readlines()
+        f.close()
+
+        return lines
+
+
+    def getCreatureHeading(self):
+        creatureHeading = []
+        for line in self.data:
+            if line.startswith('Armor Class'):
+                break
+            # using rstrip() to remonve trailing \n
+            creatureHeading.append(line.rstrip())
+
+        return creatureHeading
+
+
+    def createPropertyPair(self, properties):
+        header_keywords = [
+            'Armor', 'Class',
+            'Hit', 'Points',
+            'Speed',
+            'Saving', 'Throws',
+            'Skills',
+            'Condition', 'Immunities',
+            'Senses',
+            'Languages',
+            'Challenge'
+            ]
+        headerpart = []
+        property_part = []
+        for word in properties.split():
+            if word in header_keywords:
+                headerpart.append(word)
+            else:
+                property_part.append(word)
+
+        property_pair = [ ' '.join(headerpart), ' '.join(property_part)]
+
+        return property_pair
+
+
+    def getTopStats_abilitiesBlock(self):
+        topStats = []
+        abilitiesBlock = []
+
+        for line in self.data[2:]:
+            # send STR DEX and the like to abilities block
+            match = re.search('^[A-Z][A-Z][A-Z] \d+', line)
+            if match:
+                abilitiesBlock.append(match.group(0))
+            else:
+                stat = self.createPropertyPair(line.rstrip())
+                topStats.append(stat)
+            if line.startswith('Challenge'):
+                break
+
+        return topStats, abilitiesBlock
+
+
+    def getTraits(self):
+        # get the line after Challenge
+        for line in self.data:
+            if line.startswith("Challenge"):
+                start_line =  self.data.index(line) + 1
+
+        traits = []
+        for line in self.data[start_line:]:
+            if line.startswith("ACTION"):
+                break
+            # break into heding and paragraph pairs
+            # everything leading up to and including the first full stop
+            # is the heading. The rest is the paragraph
+            heading, paragraph = line.rstrip().split('.', 1)
+            # reenter the delimiter
+            heading += '.'
+            traits.append([heading, paragraph])
+        return traits
+
+
+    def getActions(self):
+        # get the line after ACTIONS
+        for line in self.data:
+            if line.startswith('ACTIONS'):
+                start_line = self.data.index(line) + 1
+
+        actions = []
+        for line in self.data[start_line:]:
+            if line.startswith('LEGENDARY') or line.startswith('REACTIONS'):
+                break
+            # catch the beholder exception here
+            # more work most be done with this at soup time
+            pattern = re.compile('\d+\. [\w\s]+\.')
+            beholder_exception = re.findall(pattern, line)
+            if beholder_exception != []:
+                heading, paragraph =  line.rstrip().split(beholder_exception[0])
+                # reenter the delimiter
+                heading += beholder_exception[0]
+            else:
+                heading, paragraph = line.rstrip().split('.', 1)
+                # reenter the delimiter
+                heading += '.'
+            actions.append([heading, paragraph])
+
+        return actions
+
+    def getLegendaryActions(self):
+        # get the line after LEGENDARY
+        start_line = None
+        for line in self.data:
+            if line.startswith('LEGENDARY'):
+                start_line = self.data.index(line) + 1
+
+        legendary_actions = []
+        if not start_line == None:
+            for line in self.data[start_line:]:
+                heading, paragraph = line.rstrip().split('.', 1)
+                # reenter the delimiter
+                heading += '.'
+                legendary_actions.append([heading, paragraph])
+        else:
+            legendary_actions = None
+
+        return legendary_actions
+
+    def getReactions(self):
+        # get the line after REACTIONS
+        start_line = None
+        for line in self.data:
+            if line.startswith('REACTIONS'):
+                start_line = self.data.index(line) + 1
+
+        reactions = []
+        if start_line != None:
+            for line in self.data[start_line:]:
+                heading, paragraph = line.rstrip().split('.', 1)
+                # reenter the delimiter
+                heading += '.'
+                reactions.append([heading, paragraph])
+        else:
+            reactions = None
+
+        return reactions
+
+
+
+def createSoup(html_source, creature, two_column):
+    soup = BeautifulSoup(open(html_source), "html5lib")
+
+    # set the page tilte to the same as creature name
+    title = soup.title
+    title.string = creature.creature_heading[0]
+
+    # stat block is the tag where everything lives
+    stat_block = soup.select('stat-block')[0]
+
+    # clear the stat block of the template
+    stat_block.clear()
+
+    # set stat block to two-column if flag is true
+    if two_column:
+        stat_block['data-two-column'] = ''
+
+    def createProperty(property_name, data, parent):
+            # create master tag
+            master_tag = soup.new_tag(property_name)
+            # create header
+            prop_header = soup.new_tag("h4")
+            # create paragraph
+            prop_paragraph = soup.new_tag("p")
+
+            # populate header and paragraph
+            prop_header.string = data[0]
+            prop_paragraph.string = data[1]
+
+            # append the tags together
+            master_tag.append(prop_header)
+            master_tag.append(prop_paragraph)
+
+            parent.append(master_tag)
+
+
+    def createCreatureHeading():
+        # create the required tags
+        creature_heading = soup.new_tag("creature-heading")
+        creature_name = soup.new_tag("h1")
+        creature_description = soup.new_tag("h2")
+
+        # populate the new tags
+        creature_name.string = creature.creature_heading[0]
+        creature_description.string = creature.creature_heading[1]
+
+        # append the tags together
+        stat_block.append(creature_heading)
+        creature_heading.append(creature_name)
+        creature_heading.append(creature_description)
+
+
+    def createTopstats():
+        # create new top-stats block and parent it correctly
+        top_stats_tag = soup.new_tag("top-stats")
+        stat_block.append(top_stats_tag)
+
+        # create all the property lines
+        for topstats in creature.topstats:
+            createProperty('property-line', topstats, top_stats_tag)
+
+        # create new abilities block and insert it
+        # in the top-stat block after Speed
+        def createAbilitiesblock(data, parent):
+            block = soup.new_tag('abilities-block')
+            for i in data:
+                attribute, number = i.split()
+                attribute = attribute.lower()
+                attr_string = 'data-' + attribute
+                block[attr_string] = number
+
+            parent.insert_after(block)
+
+
+        def findSpeedTag():
+            speed_property = None
+            for i in soup.select('property-line > h4'):
+                if 'Speed' in i:
+                    speed_property = i.parent
+            return speed_property
+
+
+        createAbilitiesblock(creature.abilitiesblock, findSpeedTag())
+
+
+    def createTraits():
+        for trait in creature.traits:
+            createProperty('property-block', trait, stat_block)
+
+    def createActions():
+        # create the actions header
+        actions = soup.new_tag('h3')
+        actions.string = 'Actions'
+        stat_block.append(actions)
+
+        for action in creature.actions:
+            createProperty('property-block', action, stat_block)
+
+    def fixBeholderException():
+        #TODO: at this point there is a gap between every beholder
+        # exception. It doesn't look quite like the original
+        # stat lines but it looks good enough.
+
+        # find all <h4> that matches the beholder exception pattern
+        pattern = re.compile('\d+\. [\w\s]+\.')
+        all_headers = soup.find_all('h4')
+        for x in all_headers:
+            if re.search(pattern, x.string):
+                x.name = "i"
+
+
+    def createLegendaryActions():
+        if not creature.legendary_actions == None:
+            # create the legendary actions header
+            legendary_actions = soup.new_tag('h3')
+            legendary_actions.string = 'Legendary Actions'
+            stat_block.append(legendary_actions)
+
+            # create the legendary usage block
+            usage = soup.new_tag('p')
+            usage.string = ''.join(creature.legendary_actions[0])
+            stat_block.append(usage)
+
+            for action in creature.legendary_actions[1:]:
+                createProperty('property-block', action, stat_block)
+
+    def createReactions():
+        if creature.reactions != None:
+            # create the reactions header
+            reactions = soup.new_tag('h3')
+            reactions.string = 'Reactions'
+            stat_block.append(reactions)
+
+            for reaction in creature.reactions:
+                createProperty('property-block', reaction, stat_block)
+
+
+    createCreatureHeading()
+    createTopstats()
+    createTraits()
+    createActions()
+    createReactions()
+    createLegendaryActions()
+
+    fixBeholderException()
+
+    return soup.prettify("utf-8")
+
+
+def parseArgs():
+    def vallidFolder(x):
+        if not os.path.isdir(x):
+            raise argparse.ArgumentTypeError("{0} does not exist".format(x))
+        return x
+
+    def validFile(x):
+        if not os.path.exists(x):
+            raise argparse.ArgumentTypeError("{0} does not exist".format(x))
+        return x
+
+    realpath = os.path.realpath(__file__)
+    here, tail = os.path.split(realpath)
+
+    parser = argparse.ArgumentParser(description = 'Adds monster data to html format.')
+
+    parser.add_argument('filename',  type=validFile,
+                        help='file with monster data')
+    parser.add_argument('--output', '-o',
+                        default=os.path.join(here),
+                        type=vallidFolder,
+                        help='output location for new html')
+    parser.add_argument('--template', '-t',
+                        default=os.path.join(here,'template.html'),
+                        help='template html file')
+    parser.add_argument('--two-column', '-two',
+                        default=False,
+                        action='store_true')
+
+    p = parser.parse_args()
+
+    return p
+
+
+def main():
+    args = parseArgs()
+
+    # get filename without extension
+    basename = os.path.basename(args.filename)
+    filename, extension = os.path.splitext(basename)
+    output = os.path.join(args.output, filename + ".html")
+
+    creature = Creature(args.filename)
+
+    template = args.template
+    html = createSoup(args.template, creature, args.two_column)
+    with open(output, "wb") as file:
+        file.write(html)
+        print '\n\nOutput: {0}'.format(output)
+
+
+if __name__ == "__main__":
+    main()
